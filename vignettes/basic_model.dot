@@ -1,0 +1,22 @@
+digraph G {
+//rankdir = LR;
+rankdir = TB;
+
+node [shape = "none"];
+InCode [label = "input\ncode"];
+OutCode [label = "output\ncode"];
+
+node [shape = "rectangle", fontname = "courier"];
+edge [fontname = "courier"];
+
+//label = "Rectangles represent data structures
+//Ovals represent functions
+//";
+//labeljust=right;
+
+InCode -> DependGraph [label = " inferGraph"]
+DependGraph -> Schedule [label = " schedule"]
+Schedule -> GeneratedCode [label = " generate"]
+GeneratedCode -> OutCode [label = " writeCode"]
+
+}

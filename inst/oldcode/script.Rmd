@@ -1,0 +1,73 @@
+---
+title: "autoparallel-script"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{autoparallel-script}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Script
+
+Parallelism is useful if it improves the speed of a slow program. If speed
+doesn't improve then parallelism is an unnecessary complication.
+`autoparallel` transforms programs from serial into multicore parallel, and
+then benchmarks the modified program to determine if the transformation
+increases the speed.
+
+The word 'program' means a collection of valid R statements. Typically this
+means a script or a function.
+
+## Basic Transformations
+
+We begin with the simplest and most obvious way to transform a program.
+Top level occurences of `lapply, mapply, Map` are changed to `mclapply,
+mcmapply, mcMap` from the `parallel` package, and the run times are
+compared.  Below `lapply, mapply, Map` are referred to as the 'target
+statements'.
+
+This technique may be useful if the following conditions are met:
+
+- System supports fork based parallelism (not Windows)
+- Program spends a large amount of time in the target statements
+- Program will be ran many times (benchmark requires program to run)
+- Repeated evaluation of the target statements doesn't change output or
+  have otherwise adverse effects, ie. repeatedly writing data to places it
+  should not.
+
+Consider the following simple program:
+
+```{R}
+
+# simple.R
+
+ffast = function(x) rnorm(1)
+
+fslow = function(x){
+    Sys.sleep(0.1)
+    rnorm(1)
+}
+
+z = 1:10
+r1 = lapply(z, ffast)
+r2 = lapply(z, fslow)
+
+```
+
+To make this run faster the last line should be changed to:
+
+```{R}
+
+r2 = parallel::mclapply(x, fslow)
+
+```
+
+To transform it:
+
+```{R}
+
+library(autoparallel)
+
+benchmark_transform("simple.R", output = "simple2.R")
+
+```

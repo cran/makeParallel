@@ -1,0 +1,131 @@
+---
+title: "autoparallel-experiments"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{autoparallel-interactive}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Experiments
+
+Motivation for the tools inside `autoparallel`.
+
+## Fast Functions
+
+If the function that `lapply()` calls is fast, then I expect a direct
+translation to `mclapply()` will be slower. I expect that one can improve
+the speed by splitting the lapply call into the number of chunks to match
+the number of workers and then calling something like `mclapply(lapply(...))`.
+This is how the `apply` transformation works.
+
+Is this always the case? Not if one block of code takes much longer- then
+there's a load balancing issue and the load balancing tools in the parallel
+package should probably be used. Random selection of pieces to execute may
+help in this regard.
+
+```{R}
+
+library(microbenchmark)
+
+x = seq(1e6)
+
+bm1 = microbenchmark(lapply(x, function(xi) NULL), times = 10L)
+
+# Lower quartile 463 ms
+bm1
+
+bm2 = microbenchmark(parallel::mclapply(x, function(xi) NULL, mc.cores = 2L), times = 10L)
+
+# Lower quartile 499 ms
+bm2
+
+cl = parallel::makeCluster(2L)
+
+bm3 = microbenchmark(parallel::parLapply(cl, x, function(xi) NULL), times = 10L)
+
+# Lower quartile 552 ms
+bm3
+
+```
+
+These times are similar. I just looked at the source of
+`parallel::mclapply` and saw that it indeed already does this chunking for
+efficiency that I had in mind here. And `parallel::parLapply` even uses
+`parallel::splitIndices`.
+
+This implies that it's unnecessary to take any pains to chunk the
+`apply` calls as I did previously. Instead I can simply feed them straight in
+to the corresponding version in `parallel`.
+
+## Loop Reordering
+
+What are necessary and sufficient conditions to be able to run lapply calls
+in parallel? Can we detect programmatically if they are satisfied?
+
+The `lapply` calls a function rather than a statement. Most functions called
+with `lapply` are probably pure, meaning they have no side effects. This is
+a sufficient condition to say we can fully reorder statements. But it's
+stronger than we need. For example, each function could write to a unique
+file. Then the function is not pure, because it writes to a file, but it
+may run in parallel, because the files are different.
+
+
+## Data Motion
+
+Related question, how large is too large for movement?
+
+Can we look at the code and prevent data motion? For example:
+
+
+```{R}
+
+x = as.list(1:10)
+y = Map(function(xi) 2 * xi, x)
+sy = Reduce(`+`, y)                 # Push partially to worker
+z = Map(function(yi) yi - 3, y)  # Never bring to manager
+sz = Reduce(`+`, z)                 # Push to worker
+
+```
+
+Assume the `Reduce` function is associative and these data sizes are
+prohibitively large for moving. Then it would be a win here to split the
+`lapply` calls as above and push the `Reduce` into the workers. `z` also
+never needs to come back to the manager.
+
+I thought this example was completely artificial, but looking back at it I
+realize that it's very similar to the general pattern of ADMM. The
+difference is that ADMM does iterative updates. Consider section 10 on the
+[abstract implementation for
+ADMM](http://stanford.edu/~boyd/papers/pdf/admm_distr_stats.pdf) in Boyd's
+book. It would be something like:
+
+```{R}
+
+for(i in 1:N){
+    u = Map(mu, u, x, z = z)
+    x = Map(mx, u, x, z = z)
+    ubar = Reduce(ru, u)
+    xbar = Reduce(rx, x)
+    z = fz(ubar, xbar)
+}
+
+```
+
+
+## Statistical Examples
+
+__L1 regression using ADMM__ 
+This is the example that I wanted to use for the traffic data.
+Followed [Boyd's
+work](https://web.stanford.edu/~boyd/papers/admm/least_abs_deviations/lad.html) here.
+Essentially the algorithm caches a matrix decomposition, reusing it in each
+iteration. General ADMM follows a scatter / gather pattern with the
+parallelism, assuming the objective function of `x` to be minimized can be split
+into `n` independent minimizations on `x_i`, where `n` is the abstract number of
+workers.
+
+For simple L1 regression the `x` updates reduce to a matrix vector multiply
+which can be expressed with backsolves. It would be quite difficult to
+improve on a tuned LAPACK backsolve using parallelism. So this example
+isn't going to work.

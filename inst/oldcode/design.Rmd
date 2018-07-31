@@ -1,0 +1,201 @@
+---
+title: "autoparallel-design"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{autoparallel-assumptions}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Design
+
+## schedule
+
+I told Norm that I would talk about "Automatic Parallelization of R Code"
+at JSM in July 2018. I also told Joe Rickert that I would talk to BARUG in
+the fall. For both it would be nice to have a reasonably stable package
+with minimal dependencies. And the package should be on CRAN.
+
+My general philosophy is that it's better to have one or two well thought
+out, simple, interfaces than many half baked ones. 
+Extensibility is also
+good.
+Currently the package has a bunch of half baked stuff!
+
+I'd also only like to include stuff that I would use myself.
+
+I can use the next month or so to get this to a point where it can be
+packaged and put on CRAN.
+
+The premise of the modified functions is: You are running code on a machine with many
+cores. Your code might be more efficient in parallel. Maybe not, you don't
+know. But you'd like to find out and save the more efficient version.
+
+Then what will the core features be?
+
+- `do(...)` for interactive parallelism. This could be extended a bit to
+  handle `Reduce()`.
+- automatically parallelize / accelerate functions or scripts. This should
+  work with fork and SNOW clusters.
+
+I like the idea of just doing functions, since it should be straightforward
+to make a script into a function. Saying I'm going to modify the code to
+speed up the function frees me to do many things beyond transforming
+`lapply` type calls to parallel. For example, I can eliminate unnecessary
+computation and do task parallelism also. It even opens up the door for
+compilation.
+
+The limits of what I'm targeting should be made very clear. For example, I
+want to initially stay clear of plotting, because parallel plotting is
+insane.
+
+## multiple calls
+
+Initially I'm thinking to find and transform the first instance of `lapply`
+family functions that is discovered in each statement. This should help
+avoid nested parallelism. But consider this single statement:
+
+```{R}
+f(lapply(x, gx), lapply(y, gy))
+```
+
+Suppose the most efficient code is:
+
+```{R}
+f(lapply(x, gx), mclapply(y, gy))
+```
+
+Then with the current design we cannot discover this. One way around might
+be to rewrite the original code as:
+
+```{R}
+f_arg1 = lapply(x, gx)
+f_arg2 = lapply(y, gy)
+f(f_arg1, f_arg2)
+rm(f_arg1)
+rm(f_arg2)
+```
+
+This effectively removes one layer of nested function calls, allowing us to
+examine all arguments. Does anything stop us from doing this recursively?
+Of course it's possible to go too far with this idea, inlining code and
+recursing into the bodies of built in functions. Modifying built in
+functions seems excessively complicated and error prone.
+
+One issue with this approach is that argument evaluation is forced rather
+than lazy.
+
+
+## code not executed
+
+Note: this all seems like a second order consideration. 
+Suppose the user writes:
+
+```{R}
+f = function(x) lapply(x, g)
+
+f(y)
+f(z)
+```
+
+It may be the case that the fastest way to run `f(y)` is by changing `lapply`
+to `mclapply`, while the fastest way to run `f(z)` is to just keep the
+`lapply`.
+
+There's no point in benchmarking `function(x) lapply(x, g)`, because the
+`lapply` does not run there. We could statically analyze the code to see if
+it runs, or we could actually run it and do something like `trace(lapply)`.
+
+We could work around it
+by inlining user defined functions. One obvious issue there is clobbering
+global variables, ie:
+
+```{R}
+
+f = function(x){
+    z = 10
+    x + z
+}
+z = 20
+f(5)
+
+```
+
+If we just inline the code it becomes:
+
+```{R}
+
+z = 20
+z = 10
+x = 5
+x + z
+
+```
+
+So we need to do something more clever, ie. create a new frame for
+evaluation. By the time we do that we're on our way to recreating functions
+:) Then maybe it makes more sense to just handle functions as a special
+case.
+
+
+## evaluation
+
+Definitely need to be more careful about when and how the expressions are
+evaluated when benchmarking the script. One way might be to evaluate
+everything in a specially created
+environment inheriting from the global environment.
+
+We could also look at the code more closely to determine if it's acceptable
+to evaluate it many times for a benchmark. For example, the following is
+not:
+
+```{R}
+
+x = lapply(x, f)
+
+```
+
+This could be handled by SSA.
+
+
+## parse tree
+
+Thinking about the difference between parse trees and abstract syntax trees
+(AST). One advantage to sticking with the parse tree is that we don't
+unnecessarily change code when writing a transformed version back out to a file.
+
+## ideas:
+
+How about using `%>%` to chain together pipeline parallelism? This requires
+some kind of vectorized operation though. I could also see transforming
+code that uses `%>%` into normal code using created intermediate variables
+for debugging, ie:
+
+```
+# Input:
+x %>% f %>% g
+
+# Output:
+x2 = f(x)
+g(x2)
+```
+
+Then we can possibly create a pipelined version of this.
+
+Is it possible to take an expression and modify the evaluation based on the
+variables that appear? Probably not without modifying the evaluator.
+Let `x` be some big parallel object. Then I want this code ran in the REPL:
+
+```
+f(x)
+```
+
+To notice that the special variable `x` was used, and then evaluate
+it as if I had typed this code:
+
+```
+do(f(x))
+```
+
+Hmmm... not easy to do in the interactive case, but quite possible if I'm
+modifying a script.

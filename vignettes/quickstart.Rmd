@@ -1,0 +1,123 @@
+---
+title: "makeParallel quick start"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{makeParallel-quickstart}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+> This vignette provides a brief introduction to using the makeParallel
+> package. If you would like to learn the details then see the vignette
+> titled "makeParallel concepts",
+> `vignette("concepts", package = "makeParallel")`.
+
+## background
+
+If you're totally new to parallel programming then read this first.
+
+Nearly all modern desktop and laptop computers have multiple physical
+processors. Parallel code uses multiple physical processors to do several
+computations at the same time. This is sometimes faster, but not always. R
+usually requires programmers to explicitly use parallelism, for example
+with the recommended `parallel` package. Writing parallel code requires
+more expertise from us, the users. The purpose of this package is to
+generate more efficient parallel code so that we don't have to.
+
+## setup
+
+Let's start with an existing R script `mp_example.R` in an otherwise empty
+directory.
+
+```{r}
+d <- tempdir()
+oldscript <- system.file("examples/mp_example.R", package = "makeParallel")
+script <- file.path(d, "mp_example.R")
+file.copy(oldscript, script)
+list.files(d)
+```
+
+## quick start
+
+The function `makeParallel` wraps most of the other steps and forms the
+core of this package. As the name suggests, this function makes parallel
+code from serial R code. We can use it on an existing script as follows:
+
+```{r}
+library(makeParallel)
+
+g <- makeParallel(script, file = TRUE)
+```
+
+Specifying `file = TRUE` means that `makeParallel` will write the newly
+generated code into a file based on the original name.
+
+```{r}
+list.files(d)
+```
+
+```{r, echo = FALSE, results = "hide"}
+stopifnot("gen_mp_example.R" %in% list.files(d))
+unlink(d, recursive = TRUE)
+```
+
+<!--
+`makeParallel` returns an object of class `GeneratedCode` which contains
+the newly created executable code as well as the results of the
+intermediate steps. 
+-->
+
+`makeParallel` can directly replace serial code with parallel versions. The
+following example comes from the documentation for `lapply`:
+
+```{r}
+input <- parse(text = "
+    x <- list(a = 1:10, beta = exp(-3:3), logic = c(TRUE,FALSE,FALSE,TRUE))
+    m1 <- lapply(x, mean)
+    m2 <- list()
+    for(i in seq_along(x)) {
+        m2[[i]] = mean(x[[i]])
+    }
+    ")
+
+transformed <- makeParallel(input)
+```
+
+The resulting object has transformed both the `for` loop and the `lapply`
+to `parallel::mclapply`. Note this will not run in parallel on a Windows
+system. A future release will support Windows. 
+
+Here is the code we started with.
+
+```{r}
+input
+```
+
+`makeParallel` then generated this new code.
+
+```{r}
+newcode <- writeCode(transformed)
+
+newcode
+```
+
+We can evaluate the new code and inspect the object `m2`.
+
+```{r}
+eval(newcode)
+m2
+```
+
+We can also evaluate the original code and verify that it produces the same
+output.
+
+```{r}
+m2new <- m2
+eval(input)
+m2
+
+stopifnot( all(as.numeric(m2) == as.numeric(m2new)) )
+```
+
+Ready to learn more? Read on in the "makeParallel concepts" vignette,
+`vignette("makeParallel-concepts")`.

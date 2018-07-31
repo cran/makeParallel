@@ -1,0 +1,174 @@
+---
+title: "autoparallel-introduction"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{autoparallel-introduction}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+TODO: include use case
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    eval = FALSE
+)
+```
+
+Goal is to release on CRAN in early June 2018. 
+Include the following features:
+
+- lapply -> mclapply
+- for loop -> parallel for loops
+- task parallel expressions
+
+These should work with Unix fork (priority) and SNOW parallel setups, which
+means properly detecting and synchronizing state.
+
+Not sure what kind of for loops I need to do. I'll try an experiment to see
+how the shared memory works out.
+
+For later:
+
+- Nested subexpressions. If the top level expression graph works then
+  we can use a preprocessing step to create temporary variables and then
+  use the same task parallel stuff.
+
+I want to export as few functions as possible, probably just 1 or 2.
+
+# Introduction
+
+This package is meant to simplify parallel programming in R by automating
+common tasks.
+
+My goal in creating this package was to produce something that I find
+personally useful.
+
+As data sizes and processor counts increase, parallelism becomes more
+important.
+
+Parallel programming can be challenging, because it requires further levels
+of expertise. The core of R is a functional language, and the functional
+paradigm is well suited to parallel programming. 
+
+R functions typically don't have side effects. They don't modify their
+arguments; instead they produce new objects. This is what makes R
+functional and what allows us to do parallel computing.
+
+
+## Prior Art
+
+SNOW, parallel packages now included with R as recommended packages.
+
+Bohringer's dynamic parallelization.
+
+Bengsston's futures.
+
+
+## User functions
+
+Most users should interact with this software through the functions
+described in this subsection. Our goal is to make this easy to use by
+providing only a few functions that are extensible. 
+
+Suppose you have a script `my_script.R` in R's current working directory.
+If you just want a quick transformation of your code into a parallel form
+then can do the following:
+
+```{R}
+library(autoparallel)
+
+autoparallel("my_script.R")
+```
+
+This generates a parallel version of `my_script.R`.
+
+## Task graph
+
+For more control the user can split up these steps. The first thing is to
+create a task graph. This infers the dependency structure of the
+expressions and identifies known apply type functions or vectorized
+functions.
+
+```{r}
+
+code = parse(text = "
+             ")
+
+g = taskgraph(code)
+
+plot(g)
+```
+
+TODO: bring picture over from doc.
+
+
+
+### Annotations
+
+We can annotate the task graph with additional information to improve the
+scheduling. Knowing the object sizes and the time it takes for each
+statement to execute allows more efficient static scheduling.
+
+If you need to run this same
+script many times then it may be easier to run it once in serial and
+gather all of these object sizes and timings automatically from that run:
+
+```{r}
+g = taskgraph("my_script.R", timing_run = TRUE)
+```
+
+It's also fine to supply only partial information. 
+For example, suppose line 2 of `my_script.R` is `x =
+read.csv("x.csv")`.  Suppose we know that this line results
+in an object `x` of size 32768 bytes and it takes 0.00354 seconds to run. We can express that as follows:
+
+
+```{r}
+g = annotate(g, line = 2, size = list(x = 32768), time = 0.00354)
+```
+FEEDBACK: I may implement this with attributes. This type of user API
+me the freedom to pick that as I like
+
+
+
+
+## Scratch
+
+`makeParallel()` takes user code and figures out an intelligent way to make
+it parallel by inferring the dependency structure of the expressions and
+the other patterns described in this document. It produces executable R
+code that is now parallel.
+
+```{R}
+
+pcode = makeParallel("my_script.R"
+    , clean_first = FALSE
+    , run_now = FALSE
+    , cluster_type = "FORK"
+    , nnodes = 4
+)
+
+# visual representation of the graph structure
+plot(pcode)
+
+# Save the parallel version of the script
+save_code(pcode, "pmy_script.R")
+
+# Run the whole thing interactively
+run_code(pcode)
+
+```
+
+TODO: I'm not satisfied with the extensibility of these high level
+functions. To tell if it's worth it to parallelize we would really like to
+know the `object.size()` of as many variables as we can, as well as the
+times to execute each statement. So we need a way for users to provide that
+information if they have it. I can think of a few hacky ways, see the
+bottom of this document below Scratch:
+
+## Future directions
+
+Things that we haven't yet implemented, but we plan to.
+
+- More code transformations

@@ -1,0 +1,253 @@
+---
+title: "autoparallel-evolve"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{autoparallel-evolve}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Evolving functions
+
+Tue Aug 29 10:37:03 PDT 2017
+
+Imagine functions that get better as they are used. 
+What if functions could adapt themselves to different arguments?
+
+As a simple example, consider statistical computation on an $n \times p$
+matrix $X$, ie. we have $n$ $p$ dimensional observations. Suppose we want
+to call a function $f(X)$. There may be several possible efficient
+implementations of a function $f$. Which is most efficient may depend on the
+computer system and the values of $n$ and $p$.
+
+
+## Current concepts
+
+Learning functions already
+exist; any function that caches results or intermediate computations will
+be faster when called with the same arguments the second time. A prominent
+and well executed example is R's matrix package, which caches matrix
+decompositions for subsequent use.
+
+Another example from different languages is JIT compilation. A function
+is written in a general way, for example:
+
+```{R}
+dotprod = function (x, y)
+{
+    sum(x * y)
+}
+```
+
+With JIT compilation when `dotprod()` is first called with both `x, y`
+double precision floating point number then it will take time to compile a
+version of `dotprod` specialized to these argument types, and then it will
+call it on these arguments. When `dotprod()` is subsequently called with other
+floating point arguments the same precompiled version will be discovered
+and used again.
+
+### When to use
+
+Let's be very clear about when this should be used. Parallelism introduces
+an overhead on the order of a ms, so there's no point timing operations
+that require less time than that.
+
+Some of the implementation may rely on `Sys.time()`, which has
+a certain level of precision.
+
+The instrumentation when put into place causes a small amount of overhead
+(exactly how much?) that will affect the functions being timed. This means
+that small timings will be unreliable.
+
+No point in trying to go further with the precision.
+
+## Implementation
+
+`autoparallel` lets us improve functions using `evolve()`. The simplest
+way to use `evolve()` is to pass multiple implementations as arguments.
+Consider the following two implementations of linear regression which
+extract the ordinary least squares coefficients.
+
+```{R}
+
+# Direct implementation of formula
+ols_naive = function (X, y)
+{
+    if(ncol(X) == 2){
+        X = X[, 2]
+        mX = mean(X)
+        my = mean(y)
+        Xcentered = X - mX
+        b1 = sum(Xcentered * (y - my)) / sum(Xcentered^2)
+        b0 = my - b1 * mX
+        c(b0, b1)
+    } else {
+        XtXinv = solve(t(X) %*% X)
+        XtXinv %*% t(X) %*% y
+    }
+}
+
+ols_clever = function (X, y)
+{
+    XtX = crossprod(X)
+    Xty = crossprod(X, y)
+    solve(XtX, Xty)
+}
+
+```
+
+Before timing we may not be sure which of these implementations are faster.
+Then we can pass both implementations into `evolve()` and let it figure
+it out for us.
+
+```{R}
+
+library(autoparallel)
+
+ols = evolve(ols_naive, ols_clever)
+
+```
+
+`ols()` is a function with the same signature (or a superset of the
+signatures?) of `ols_naive()` and `ols_clever()`. 
+
+## Ideas
+
+- `ols()` will try different implementations. This implies that there must
+  be different possible implementations to try.
+- `ols()` times itself
+- `ols()` detects easily parallelizable parts of code and can change them.
+
+## A Statistical Problem
+
+Every function evaluation produces an answer along with the accompanying
+time. Suppose we have a finite set of $I$ implementations and $D$
+sizes of data which determine the actual computational complexity.
+Then we can model the wall time to run the function in a fully general way as:
+
+$$
+    t = \mu(i, d) + \epsilon(i, d)
+$$
+
+$\mu(i, d), i \in I, d \in D$ is the true mean time while $\epsilon(i, d)$
+is a random variable.
+
+The overarching goal is to choose an implementation $i \in I$ which
+minimizes the time required to solve a problem of size $d \in D$.
+
+Looking back at the `ols()` example, $I$ = `{ols_naive, ols_clever}`, while
+$D$ could be anything, but suppose we are only interested in problems with
+$n \in \{ 100, 500 \}$ and $p \in \{1, 30\}$.
+
+This is an updating / online learning problem.
+
+
+```{R}
+
+library(microbenchmark)
+
+n = 100
+p = 1
+ones = rep(1, n)
+X = matrix(c(ones, rnorm(n * p)), nrow = n)
+y = rnorm(n)
+
+beta_naive = ols_naive(X, y)
+beta_clever = ols_clever(X, y)
+
+max(abs(beta_naive - beta_clever))
+
+microbenchmark(ols_naive(X, y), ols_clever(X, y), times = 10)
+
+```
+
+With these numbers the naive version is slightly better.
+
+
+## Builtin functions
+
+Suppose one wants to do the same timing and predictions for a function in
+base R. Take `crossprod(X)` as an example, which computes the matrix $X^T
+X$. Let $X$ is an $n \times p$ matrix of real numbers. `crossprod(X)` can
+use the symmetry of the result, so it needs `n p (p + 1) / 2` floating
+point operations.
+
+```{R}
+
+# Include y to match the signature for crossprod()
+crossprod_flops = function(x, y)
+{
+    n = nrow(x)
+    p = ncol(x)
+    data.frame(npp = n * p * (p + 1) / 2)
+}
+
+trace_timings(crossprod, metadata_func = crossprod_flops)
+
+n = 100
+p = 4
+x = matrix(rnorm(n * p), nrow = n)
+crossprod(x)
+
+n = 200
+p = 50
+x = matrix(rnorm(n * p), nrow = n)
+crossprod(x)
+
+```
+
+## Design for Trace based timings
+
+The `metadata_func` function captures the relevant metadata for an
+operation. To make a custom `metadata_func` functions, as with the
+`crossprod_flops()` above, it seems reasonable to match the signature of
+the function which is being timed. This could be verified. Then the design
+issue is how to access and use these variables from within the functions
+that are used in `trace()`? Note that these functions cannot have any
+parameters. Therefore we must discover the arguments from within the
+functions themselves.
+
+If the formal parameters match then we can directly lift the arguments from
+the calling function. Some care is needed to respect lazy evaluation. Here
+are some considerations. In the following let `f` be the function and `am()` be the
+corresponding argument metadata function with the same signature as `f`.
+
+```
+f = function(a) ...
+am = function(a) ...
+```
+
+`f(x)` is the same as `f(a = x)`, so we can evaluate `am(a)`.
+Similarly, `f(g(x))` lets us evaluate `am(a)`. Thinking more on this, we
+can just evaluate the default signature. One issue that may come up is
+finding the wrong values inside the intermediate closure. 
+Another issue is where to evaluate the signature? Inside the body of the
+function where the tracing happens. `metadata_func()` does not exist
+there. We can put it there.
+
+The more general case is a single function such as the default
+`length_first_arg()`, which must be capable of handling different argument
+signatures. First off we need to assume that there is at least one
+argument, since otherwise we can't make any predictions based on
+characteristics of the arguments.
+
+For the trace based method, one way to implement `length_first_arg()` is as
+a function with zero parameters that reaches through to its parent. This
+approach won't work for the S3 methods currently using `...` though. So maybe the
+best way is to rewrite it all to use the trace implementation, since that
+is more general. Then I don't have to have two implementations.
+
+
+## Extensions
+
+I could cache the functions and the models on the user's disk for reuse in
+new sessions. Duncan has suggested that we even cache them centrally, ie.
+the user program sends in metadata, system info, and possibly
+implementations to a central server.
+
+## Related ideas
+
+Is there a way to "merge" functions? In the OLS case for least squares I
+give three implementations. Some may work better on special cases. Could we
+pull all of that logic into one function? That's somewhat what I'm doing
+here.

@@ -1,0 +1,75 @@
+digraph G {
+rankdir = LR;
+
+labeljust=right;
+
+node [shape = "rectangle", fontname = "arial"];
+//------------------------------------------------------------
+file_name [label = "file\nname"];
+parsed_expression [label = "parsed\nexpression"];
+
+node [shape = "rectangle", fontname = "courier"];
+//------------------------------------------------------------
+DependGraph;
+TaskSchedule;
+MapSchedule;
+SerialSchedule;
+GeneratedCode;
+
+node [shape = "oval", fontname = "arial"];
+//------------------------------------------------------------
+socket_code_generator [label = "socket code\ngenerator"];
+parallel_package_code_generator [label = "parallel package\ncode generator"];
+
+node [shape = "oval", fontname = "courier"];
+//------------------------------------------------------------
+inferGraph;
+scheduleTaskList;
+map_scheduler [label = "schedule\n(default)"];
+
+node [style = "filled", shape = "oval", fontname = "courier"];
+//------------------------------------------------------------
+scheduleForkJoin;
+scheduleCluster;
+ForkJoinSchedule [shape = "rectangle"];
+
+node [fontname = "arial"];
+hive_code_generator [label = "Apache Hive\ncode generator"];
+snow_code_generator [label = "SNOW code\ngenerator"];
+future_code_generator [label = "R future package\ncode generator"];
+mcparallel_code_generator [label = "parallel::mcparallel\ncode generator"];
+
+
+file_name -> inferGraph;
+parsed_expression -> inferGraph;
+inferGraph -> DependGraph;
+DependGraph -> scheduleTaskList;
+DependGraph -> map_scheduler;
+DependGraph -> scheduleForkJoin;
+DependGraph -> scheduleCluster
+scheduleTaskList -> TaskSchedule;
+scheduleCluster -> TaskSchedule;
+map_scheduler -> MapSchedule;
+SerialSchedule -> GeneratedCode [label = "non op"];
+TaskSchedule -> socket_code_generator;
+MapSchedule -> parallel_package_code_generator;
+MapSchedule -> hive_code_generator;
+MapSchedule -> snow_code_generator;
+hive_code_generator -> GeneratedCode;
+snow_code_generator -> GeneratedCode;
+socket_code_generator -> GeneratedCode;
+parallel_package_code_generator -> GeneratedCode;
+scheduleForkJoin -> ForkJoinSchedule;
+ForkJoinSchedule -> future_code_generator;
+ForkJoinSchedule -> mcparallel_code_generator;
+future_code_generator -> GeneratedCode;
+mcparallel_code_generator -> GeneratedCode;
+
+// Bypass
+edge [style = "dotted"];
+//------------------------------------------------------------
+scheduleTaskList -> SerialSchedule;
+map_scheduler -> SerialSchedule;
+scheduleForkJoin -> SerialSchedule;
+scheduleCluster -> SerialSchedule;
+}
